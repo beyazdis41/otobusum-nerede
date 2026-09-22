@@ -34,10 +34,10 @@
     display:flex; justify-content:center;
   }
   #app{
-    width:100%; max-width:480px; min-height:100vh;
+    width:100%; max-width:480px; min-height:100vh; min-height:100dvh;
     background:var(--bg); position:relative; display:flex; flex-direction:column;
   }
-  .screen{ display:none; flex-direction:column; flex:1; min-height:100vh; }
+  .screen{ display:none; flex-direction:column; flex:1; min-height:100vh; min-height:100dvh; }
   .screen.active{ display:flex; }
 
   .status-row{display:flex; align-items:center; justify-content:space-between; padding:8px 16px 2px; font-size:12px; font-weight:600;}
@@ -100,6 +100,7 @@
   .map-wrap{margin:10px 14px;border-radius:14px;overflow:hidden;background:#e9ece6;height:200px;position:relative;}
   .map-wrap svg{width:100%;height:100%;display:block;}
   #routeMap{width:100%;height:100%;background:#e9ece6;}
+  .leaflet-control-attribution{font-size:8px !important; padding:0 4px !important; background:rgba(255,255,255,.7) !important; line-height:1.4 !important;}
   .bus-divicon{font-size:18px; text-align:center; filter:drop-shadow(0 1px 2px rgba(0,0,0,.4));}
   .user-divicon{width:14px;height:14px;border-radius:50%;background:#f59e0b;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);}
 
@@ -111,13 +112,16 @@
 
   .timeline{padding:10px 16px 16px;flex:1;overflow-y:auto;position:relative;}
   .timeline-line{position:absolute;left:31px;top:14px;bottom:14px;width:1.5px;background:var(--border);}
-  .stop-row{display:flex;align-items:center;gap:10px;padding:7px 0;position:relative;}
+  .stop-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;position:relative;}
   .stop-dot{width:22px;height:22px;border-radius:50%;background:var(--border);color:var(--text-2);font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;z-index:1;}
   .stop-dot.passed:not(.end){background:var(--accent);color:#fff;}
   .stop-name.passed{color:var(--text); font-weight:700;}
   .stop-dot.end{background:var(--text);color:#fff;}
   .stop-name{font-size:11.5px;font-weight:600;color:var(--text);}
   .stop-name.end{font-weight:800;}
+  .stop-row.here{background:rgba(5,150,105,.1); border-radius:10px; margin-left:-8px; padding-left:8px;}
+  .stop-row.here .stop-dot{background:#059669 !important; font-size:11px;}
+  .here-badge{margin-left:auto; font-size:9px; font-weight:800; color:#059669; background:rgba(5,150,105,.15); padding:2px 7px; border-radius:999px; white-space:nowrap;}
 
   .bottom-nav{display:flex;border-top:1px solid var(--border);background:var(--card);padding:8px 10px 10px;}
   .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;color:var(--text-3);font-size:9.5px;font-weight:600;cursor:pointer;}
@@ -396,6 +400,10 @@ function normalizeTr(s){
     .replaceAll('İ','i').replaceAll('I','ı');
 }
 
+function modeIcon(mode){
+  return { otobus: '🚌', metro: '🚇', izban: '🚆', tramvay: '🚋' }[mode] || '🚌';
+}
+
 function renderLines(){
   const q = normalizeTr(document.getElementById('lineSearch').value);
   const list = document.getElementById('lineList');
@@ -408,12 +416,13 @@ function renderLines(){
   list.innerHTML = shown.map(l => {
     const hasBoth = l.gidis && l.donus;
     const sample = l.gidis || l.donus;
+    const modeTag = l.mode && l.mode !== 'otobus' ? `${modeIcon(l.mode)} ${l.mode.charAt(0).toUpperCase()+l.mode.slice(1)} · ` : '';
     return `
     <div class="line-card" onclick="openLine('${l.id}')">
       <div class="line-badge">${l.code}</div>
       <div style="flex:1;">
         <p class="line-title">${sample.from} - ${sample.to}</p>
-        <p class="line-sub">${hasBoth ? '↔ İki yön mevcut' : '→ Tek yön verisi mevcut'} · ${sample.stops.length} durak</p>
+        <p class="line-sub">${modeTag}${hasBoth ? '↔ İki yön' : '→ Tek yön'} · ${sample.stops.length} durak</p>
       </div>
       <button class="open-mini-btn" onclick="event.stopPropagation(); openLine('${l.id}')">Duraklar ➔</button>
     </div>`;
@@ -488,14 +497,34 @@ function renderRoute(){
   // hangi duraklarin "gecildigini" isaretleyebilelim
   updateEstimatedBus();
 
-  // zaman cizelgesi: gecilen duraklar dolu, kalanlar bos
+  // araç (canli varsa canli, yoksa tahmini) hangi durağa en yakınsa isaretle
+  const liveStopIndices = new Set();
+  if(livePoints && livePoints.length){
+    livePoints.forEach(p => {
+      const n = nearestStop(p, d.stops);
+      if(n && n.dist < 300){
+        const idx = d.stops.indexOf(n.stop);
+        if(idx >= 0) liveStopIndices.add(idx);
+      }
+    });
+  } else if(estimatedBusPoint){
+    const n = nearestStop(estimatedBusPoint, d.stops);
+    if(n && n.dist < 300){
+      const idx = d.stops.indexOf(n.stop);
+      if(idx >= 0) liveStopIndices.add(idx);
+    }
+  }
+
+  // zaman cizelgesi: gecilen duraklar dolu, kalanlar bos, aracin oldugu durak isaretli
   const tl = document.getElementById('timeline');
   tl.innerHTML = '<div class="timeline-line"></div>' + d.stops.map((s, i) => {
     const isEnd = i === 0 || i === d.stops.length - 1;
     const passed = i <= currentPassedIndex;
-    return `<div class="stop-row">
-      <div class="stop-dot ${isEnd ? 'end' : ''} ${passed ? 'passed' : ''}">${isEnd ? (i===0?'▲':'●') : ''}</div>
+    const isHere = liveStopIndices.has(i);
+    return `<div class="stop-row ${isHere ? 'here' : ''}">
+      <div class="stop-dot ${isEnd ? 'end' : ''} ${passed ? 'passed' : ''}">${isHere ? '🚌' : (isEnd ? (i===0?'▲':'●') : '')}</div>
       <span class="stop-name ${isEnd ? 'end' : ''} ${passed ? 'passed' : ''}">${s.name}</span>
+      ${isHere ? '<span class="here-badge">Araç burada</span>' : ''}
     </div>`;
   }).join('');
 
@@ -514,10 +543,12 @@ function initOrUpdateMap(d){
   if(typeof L === 'undefined') return; // Leaflet CDN'den yuklenemedi (offline olabilir)
 
   if(!leafletMap){
-    leafletMap = L.map('routeMap', { zoomControl: false, attributionControl: true });
+    leafletMap = L.map('routeMap', { zoomControl: false, attributionControl: false });
+    L.control.attribution({ prefix: false, position: 'bottomright' })
+      .addAttribution('© Esri, OSM')
+      .addTo(leafletMap);
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19,
-      attribution: '© Esri © OpenStreetMap contributors'
+      maxZoom: 19
     }).addTo(leafletMap);
     routeLayerGroup = L.layerGroup().addTo(leafletMap);
     dynamicLayerGroup = L.layerGroup().addTo(leafletMap);
@@ -651,8 +682,10 @@ function updateLiveStatusUI(){
     liveLbl.textContent = nearestList.length
       ? `${livePoints.length} araç aktif · en yakını: ${nearestList[0]}`
       : `${livePoints.length} araç aktif`;
+  } else if(estimatedBusPoint){
+    liveLbl.textContent = '1 araç (tahmini konum)';
   } else {
-    liveLbl.textContent = '';
+    liveLbl.textContent = 'Şu an aktif sefer verisi yok';
   }
 }
 
