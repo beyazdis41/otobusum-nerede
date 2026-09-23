@@ -124,6 +124,8 @@
   .here-badge{margin-left:auto; font-size:9px; font-weight:800; color:#059669; background:rgba(5,150,105,.15); padding:2px 7px; border-radius:999px; white-space:nowrap;}
 
   .bottom-nav{display:flex;border-top:1px solid var(--border);background:var(--card);padding:8px 10px 10px;}
+  .ad-slot{display:flex;align-items:center;justify-content:center;gap:6px;height:50px;background:var(--bg);border-top:1px solid var(--border);font-size:9px;color:var(--text-3);font-weight:600;}
+  .ad-slot .ad-tag{background:#f59e0b;color:#fff;font-size:7px;font-weight:800;padding:2px 5px;border-radius:4px;}
   .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;color:var(--text-3);font-size:9.5px;font-weight:600;cursor:pointer;}
   .nav-btn.active{color:var(--accent);font-weight:800;}
 
@@ -143,7 +145,7 @@
 
   .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#0f172a;color:#fff;font-size:12px;font-weight:600;padding:10px 16px;border-radius:10px;z-index:50;opacity:0;pointer-events:none;transition:opacity .2s, bottom .2s; max-width:80%; text-align:center;}
 
-  .sheet-overlay{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:60;display:none;align-items:flex-end;justify-content:center;}
+  .sheet-overlay{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:9999;display:none;align-items:flex-end;justify-content:center;}
   .sheet-overlay.show{display:flex;}
   .sheet{background:var(--card);width:100%;max-width:480px;border-radius:20px 20px 0 0;max-height:75vh;display:flex;flex-direction:column;animation:sheetUp .2s ease-out;}
   @keyframes sheetUp{from{transform:translateY(100%);} to{transform:translateY(0);}}
@@ -224,6 +226,7 @@
       <span class="cnt" id="lineCount">745 hat</span>
     </div>
     <div class="list" id="lineList"></div>
+    <div class="ad-slot"><span class="ad-tag">REKLAM</span> AdMob Banner 320x50</div>
     <div class="bottom-nav">
       <button class="nav-btn active" data-nav="search" onclick="go('search')">🔍<span>Ara</span></button>
       <button class="nav-btn" data-nav="favs" onclick="go('favs')">⭐<span>Favoriler</span></button>
@@ -271,6 +274,7 @@
       <p style="font-size:16px;font-weight:800;padding:10px 16px 4px;">Favoriler</p>
     </div>
     <div class="list" id="favList"></div>
+    <div class="ad-slot"><span class="ad-tag">REKLAM</span> AdMob Banner 320x50</div>
     <div class="bottom-nav">
       <button class="nav-btn" data-nav="search" onclick="go('search')">🔍<span>Ara</span></button>
       <button class="nav-btn active" data-nav="favs" onclick="go('favs')">⭐<span>Favoriler</span></button>
@@ -305,6 +309,7 @@
         <span style="font-size:10px;color:var(--text-3);font-weight:600;">İBB Açık Veri (GTFS)</span>
       </div>
     </div>
+    <div class="ad-slot"><span class="ad-tag">REKLAM</span> AdMob Banner 320x50</div>
     <div class="bottom-nav">
       <button class="nav-btn" data-nav="search" onclick="go('search')">🔍<span>Ara</span></button>
       <button class="nav-btn" data-nav="favs" onclick="go('favs')">⭐<span>Favoriler</span></button>
@@ -485,7 +490,7 @@ function openLine(id){
   go('route');
   if(busUpdateTimer) clearInterval(busUpdateTimer);
   if(liveFetchTimer) clearInterval(liveFetchTimer);
-  busUpdateTimer = setInterval(() => { renderRoute(); }, 15000);
+  busUpdateTimer = setInterval(() => { refreshVehiclePositionOnly(); }, 15000);
 
   // Izmir ESHOT otobusleri icin gercek, acik (auth gerektirmeyen) canli konum API'si mevcut.
   if(currentCityId === 'izmir' && currentLine.mode === 'otobus'){
@@ -547,8 +552,21 @@ function renderRoute(){
   // once tahmini konumu hesapla, boylece zaman cizelgesinde
   // hangi duraklarin "gecildigini" isaretleyebilelim
   updateEstimatedBus();
+  renderTimeline();
 
-  // araç (canli varsa canli, yoksa tahmini) hangi durağa en yakınsa isaretle
+  // gercek harita: Leaflet + OpenStreetMap karolari (haritayi burada YENIDEN KURAR,
+  // fitBounds ile gorunumu sifirlar - sadece hat ilk acilirken/yon degisince cagir)
+  initOrUpdateMap(d);
+
+  redrawDynamicLayer();
+}
+
+// zaman cizelgesini (durak listesi) yeniden cizer - haritaya DOKUNMAZ.
+// Periyodik "arac nerede" yenilemesinde bunu kullaniyoruz ki harita
+// her 15 saniyede bir sifirlanip kuculuyormus hissi vermesin.
+function renderTimeline(){
+  const d = currentLine[currentDirection];
+
   const liveStopIndices = new Set();
   if(livePoints && livePoints.length){
     livePoints.forEach(p => {
@@ -566,7 +584,6 @@ function renderRoute(){
     }
   }
 
-  // zaman cizelgesi: gecilen duraklar dolu, kalanlar bos, aracin oldugu durak isaretli
   const tl = document.getElementById('timeline');
   tl.innerHTML = '<div class="timeline-line"></div>' + d.stops.map((s, i) => {
     const isEnd = i === 0 || i === d.stops.length - 1;
@@ -578,10 +595,22 @@ function renderRoute(){
       ${isHere ? '<span class="here-badge">Araç burada</span>' : ''}
     </div>`;
   }).join('');
+}
 
-  // gercek harita: Leaflet + OpenStreetMap karolari
-  initOrUpdateMap(d);
-
+// periyodik (15sn) "arac nerede" yenilemesi - HARITAYI YENIDEN KURMAZ,
+// sadece arac/kullanici noktasini ve durak listesini gunceller.
+function refreshVehiclePositionOnly(){
+  if(livePoints !== null || currentCityId === 'izmir' || currentCityId === 'istanbul'){
+    // canli API kullanan sehirlerde zaten refreshLivePositions/refreshLiveIettPositions
+    // kendi zamanlayicisinda calisiyor, o zaten redrawDynamicLayer+renderTimeline'i tetikleyecek.
+    // burada sadece tahmini konumu (canli veri yoksa) tazeliyoruz:
+    if(!livePoints || !livePoints.length){
+      updateEstimatedBus();
+    }
+  } else {
+    updateEstimatedBus();
+  }
+  renderTimeline();
   redrawDynamicLayer();
 }
 
@@ -619,7 +648,8 @@ function initOrUpdateMap(d){
     L.marker([s.lat, s.lon], { icon }).bindPopup(`<b>${s.name}</b>`).addTo(routeLayerGroup);
   });
 
-  leafletMap.fitBounds(latlngs, { padding: [28, 28] });
+  const firstStop = d.stops[0];
+  leafletMap.setView([firstStop.lat, firstStop.lon], 16);
   setTimeout(() => leafletMap.invalidateSize(), 150);
 }
 
@@ -685,6 +715,30 @@ function updateEstimatedBus(){
     lon: s0.lon + (s1.lon - s0.lon) * frac,
   };
   currentPassedIndex = i;
+
+  // gercek guzergah sekli varsa (Izmir/Konya), noktayi o cizginin UZERINE
+  // yapistir - yoksa durak-durak duz cizgiden hesaplandigi icin yolun
+  // yanindaymis gibi gorunuyordu.
+  if(d.shape && d.shape.length > 1){
+    estimatedBusPoint = snapToShape(estimatedBusPoint, d.shape);
+  }
+}
+
+// bir noktayi bir cizgi (polyline) uzerindeki en yakin noktaya yapistirir.
+// kucuk mesafelerde (bir sehir icinde) duzlemsel yaklasim yeterince dogru.
+function snapToShape(point, shape){
+  let best = point, bestDist = Infinity;
+  for(let i = 0; i < shape.length - 1; i++){
+    const [ay, ax] = shape[i], [by, bx] = shape[i+1];
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx*dx + dy*dy;
+    let t = len2 === 0 ? 0 : ((point.lon - ax) * dx + (point.lat - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const proj = { lat: ay + t*dy, lon: ax + t*dx };
+    const d = haversine(point.lat, point.lon, proj.lat, proj.lon);
+    if(d < bestDist){ bestDist = d; best = proj; }
+  }
+  return best;
 }
 
 function redrawDynamicLayer(){
