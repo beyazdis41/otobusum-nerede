@@ -556,7 +556,7 @@ function renderRoute(){
 
   // gercek harita: Leaflet + OpenStreetMap karolari (haritayi burada YENIDEN KURAR,
   // fitBounds ile gorunumu sifirlar - sadece hat ilk acilirken/yon degisince cagir)
-  initOrUpdateMap(d);
+  initOrUpdateMap(d, true);
 
   redrawDynamicLayer();
 }
@@ -611,6 +611,7 @@ function refreshVehiclePositionOnly(){
     updateEstimatedBus();
   }
   renderTimeline();
+  if(currentLine) redrawRouteLayer(currentLine[currentDirection]); // durak renklerini haritada da guncelle (zoom/konum sabit kalir)
   redrawDynamicLayer();
 }
 
@@ -619,7 +620,7 @@ let leafletMap = null;
 let routeLayerGroup = null;
 let dynamicLayerGroup = null;
 
-function initOrUpdateMap(d){
+function initOrUpdateMap(d, resetView){
   if(typeof L === 'undefined') return; // Leaflet CDN'den yuklenemedi (offline olabilir)
 
   if(!leafletMap){
@@ -634,23 +635,31 @@ function initOrUpdateMap(d){
     dynamicLayerGroup = L.layerGroup().addTo(leafletMap);
   }
 
+  redrawRouteLayer(d);
+
+  if(resetView){
+    const firstStop = d.stops[0];
+    leafletMap.setView([firstStop.lat, firstStop.lon], 16);
+    setTimeout(() => leafletMap.invalidateSize(), 150);
+  }
+}
+
+// duraklarin (ve guzergah cizgisinin) katmanini yeniden cizer - "gecildi" renklerini
+// gunceller ama haritanin zoom/konumuna DOKUNMAZ. Periyodik yenilemede bunu kullaniyoruz.
+function redrawRouteLayer(d){
+  if(!routeLayerGroup) return;
   routeLayerGroup.clearLayers();
 
   // gercek guzergah sekli varsa (Izmir/Konya) onu kullan, yoksa durak-durak duz cizgi ciz
   const lineCoords = (d.shape && d.shape.length > 1) ? d.shape : d.stops.map(s => [s.lat, s.lon]);
   L.polyline(lineCoords, { color: '#2563eb', weight: 4, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }).addTo(routeLayerGroup);
 
-  const latlngs = d.stops.map(s => [s.lat, s.lon]);
   d.stops.forEach((s, i) => {
     const isEnd = i === 0 || i === d.stops.length - 1;
     const passed = i <= currentPassedIndex;
     const icon = stopBadgeIcon({ isEnd, passed });
     L.marker([s.lat, s.lon], { icon }).bindPopup(`<b>${s.name}</b>`).addTo(routeLayerGroup);
   });
-
-  const firstStop = d.stops[0];
-  leafletMap.setView([firstStop.lat, firstStop.lon], 16);
-  setTimeout(() => leafletMap.invalidateSize(), 150);
 }
 
 // referans tasarimdaki durak rozeti: yuvarlatilmis kare, mavi cerceve, icinde "D"
@@ -838,7 +847,7 @@ async function refreshLivePositions(){
     if(!res.ok) throw new Error('http ' + res.status);
     const data = await res.json();
     const list = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : null);
-    if(!list || list.length === 0){ livePoints = null; redrawDynamicLayer(); return; }
+    if(!list || list.length === 0){ livePoints = null; applyLiveUpdate(); return; }
 
     const seen = new Set();
     const points = [];
@@ -857,7 +866,7 @@ async function refreshLivePositions(){
     // tahmini konuma geri don, kullaniciyi hata mesajiyla rahatsiz etme.
     livePoints = null;
   }
-  redrawDynamicLayer();
+  applyLiveUpdate();
 }
 
 /* ====== ISTANBUL IETT CANLI KONUM (best-effort, eski SOAP servisi) ======
@@ -897,7 +906,7 @@ async function refreshLiveIettPositions(){
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
     const list = JSON.parse(innerJsonText);
-    if(!Array.isArray(list) || list.length === 0){ livePoints = null; redrawDynamicLayer(); return; }
+    if(!Array.isArray(list) || list.length === 0){ livePoints = null; applyLiveUpdate(); return; }
 
     const seen = new Set();
     const points = [];
@@ -914,10 +923,31 @@ async function refreshLiveIettPositions(){
   }catch(e){
     livePoints = null;
   }
-  redrawDynamicLayer();
+  applyLiveUpdate();
 }
 
 /* ====== GERCEK GPS KONUMU (kullanicinin kendi konumu) ====== */
+// Canli konum (Izmir/Istanbul API'leri) her guncellendiginde cagrilir:
+// "gecilen durak" bilgisini canli araclarin en yakin oldugu duraga gore
+// gunceller, sonra zaman cizelgesini + haritayi (zoom/konum SABIT kalarak) yeniler.
+function applyLiveUpdate(){
+  if(currentLine && livePoints && livePoints.length){
+    const d = currentLine[currentDirection];
+    let maxIdx = -1;
+    livePoints.forEach(p => {
+      const n = nearestStop(p, d.stops);
+      if(n && n.dist < 300){
+        const idx = d.stops.indexOf(n.stop);
+        if(idx > maxIdx) maxIdx = idx;
+      }
+    });
+    if(maxIdx >= 0) currentPassedIndex = maxIdx;
+  }
+  renderTimeline();
+  if(currentLine) redrawRouteLayer(currentLine[currentDirection]);
+  redrawDynamicLayer();
+}
+
 function haversine(lat1, lon1, lat2, lon2){
   const R = 6371000;
   const toRad = x => x * Math.PI / 180;
